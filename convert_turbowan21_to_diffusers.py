@@ -380,7 +380,7 @@ def main():
     tokenizer_path = "google/umt5-xxl"
     umt5_pth = "google/umt5-xxl"
 
-    output_dir = "/home/admin/test/Wan2.1-T2V-1.3B-Diffusers"
+    output_dir = "TurboWan2.1-T2V-1.3B-Diffusers"
 
     os.makedirs(output_dir, exist_ok=True)
 
