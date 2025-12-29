@@ -1,7 +1,9 @@
+import json
+import os
 from typing import Dict, Any
 
 import torch
-
+from accelerate import init_empty_weights
 from diffusers import (
     AutoencoderKLWan,
     WanPipeline,
@@ -10,9 +12,47 @@ from diffusers import (
 from transformers import AutoTokenizer, UMT5EncoderModel
 
 from model_network.turbo_wan import WanTransformer3DModel
-from accelerate import init_empty_weights
-import json
-import os
+
+
+def get_transformer_config(model_type: str) -> Dict[str, Any]:
+    if model_type == "Wan-T2V-1.3B":
+        return {
+            "added_kv_proj_dim": None,
+            "attention_head_dim": 128,
+            "cross_attn_norm": True,
+            "eps": 1e-06,
+            "ffn_dim": 8960,
+            "freq_dim": 256,
+            "in_channels": 16,
+            "num_attention_heads": 12,
+            "num_layers": 30,
+            "out_channels": 16,
+            "patch_size": [1, 2, 2],
+            "qk_norm": "rms_norm_across_heads",
+            "text_dim": 4096,
+            "attention_type": "sla",
+            "sla_topk": 0.1
+        }
+    elif model_type == "Wan-T2V-14B":
+        return {
+            "added_kv_proj_dim": None,
+            "attention_head_dim": 128,
+            "cross_attn_norm": True,
+            "eps": 1e-06,
+            "ffn_dim": 13824,
+            "freq_dim": 256,
+            "in_channels": 16,
+            "num_attention_heads": 40,
+            "num_layers": 40,
+            "out_channels": 16,
+            "patch_size": [1, 2, 2],
+            "qk_norm": "rms_norm_across_heads",
+            "text_dim": 4096,
+            "attention_type": "sla",
+            "sla_topk": 0.1
+        }
+    else:
+        raise NotImplementedError("unsupported model type")
 
 
 def modify_model_index_json(output_dir):
@@ -43,7 +83,7 @@ def modify_model_index_json(output_dir):
     print(f"Modified model_index.json: _class_name → WanDMDPipeline, transformer[0] → diffusers")
 
 
-def convert_transformer_from_pth(pth_path, output_dir):
+def convert_transformer_from_pth(model_type, pth_path, output_dir):
     """Transformer"""
     # Load the original weight
     original_state_dict = torch.load(pth_path, map_location='cpu')
@@ -51,26 +91,11 @@ def convert_transformer_from_pth(pth_path, output_dir):
         weight = original_state_dict['patch_embedding.weight']
         if weight.dim() == 2:  # if [1536, 64]
             # [1536, 64] --> [1536, 16, 1, 2, 2]
+            # [5120, 64] --> [5120, 16, 1, 2, 2]
             # 64 = 16 * 1 * 2 * 2
-            original_state_dict['patch_embedding.weight'] = weight.view(1536, 16, 1, 2, 2)
+            original_state_dict['patch_embedding.weight'] = weight.view(-1, 16, 1, 2, 2)
     # Creating a Wan Transformer Configuration
-    config = {
-        "added_kv_proj_dim": None,
-        "attention_head_dim": 128,
-        "cross_attn_norm": True,
-        "eps": 1e-06,
-        "ffn_dim": 8960,
-        "freq_dim": 256,
-        "in_channels": 16,
-        "num_attention_heads": 12,
-        "num_layers": 30,
-        "out_channels": 16,
-        "patch_size": [1, 2, 2],
-        "qk_norm": "rms_norm_across_heads",
-        "text_dim": 4096,
-        "attention_type": "sla",
-        "sla_topk": 0.1
-    }
+    config = get_transformer_config(model_type)
     sample_tensor = next(iter(original_state_dict.values()))
     # Create a transformer model
     transformer = WanTransformer3DModel(**config)
@@ -375,6 +400,7 @@ def create_diffusers_pipeline(model_dir, transformer, vae, umt5_pth, tokenizer_p
 
 # main
 def main():
+    model_type = "Wan-T2V-1.3B"
     transformer_pth = "Wan2.1-T2V-1.3B/TurboWan2.1-T2V-1.3B-480P.pth"
     vae_pth = "Wan2.1-T2V-1.3B/Wan2.1_VAE.pth"
     tokenizer_path = "google/umt5-xxl"
@@ -385,7 +411,7 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     print("convert transformer...")
-    transformer = convert_transformer_from_pth(transformer_pth, output_dir)
+    transformer = convert_transformer_from_pth(model_type, transformer_pth, output_dir)
 
     print("convert VAE...")
     vae = convert_vae_from_pth(vae_pth, output_dir)
