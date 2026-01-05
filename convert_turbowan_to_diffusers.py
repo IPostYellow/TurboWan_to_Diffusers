@@ -7,6 +7,7 @@ from accelerate import init_empty_weights
 from diffusers import (
     AutoencoderKLWan,
     WanPipeline,
+    WanImageToVideoPipeline,
     UniPCMultistepScheduler
 )
 from transformers import AutoTokenizer, UMT5EncoderModel
@@ -51,11 +52,29 @@ def get_transformer_config(model_type: str) -> Dict[str, Any]:
             "attention_type": "sla",
             "sla_topk": 0.1
         }
+    elif model_type == "Wan2.2-I2V-14B-720p":
+        return {
+            "added_kv_proj_dim": None,
+            "attention_head_dim": 128,
+            "cross_attn_norm": True,
+            "eps": 1e-06,
+            "ffn_dim": 13824,
+            "freq_dim": 256,
+            "in_channels": 36,
+            "num_attention_heads": 40,
+            "num_layers": 40,
+            "out_channels": 16,
+            "patch_size": [1, 2, 2],
+            "qk_norm": "rms_norm_across_heads",
+            "text_dim": 4096,
+            "attention_type": "sla",
+            "sla_topk": 0.1
+        }
     else:
         raise NotImplementedError("unsupported model type")
 
 
-def modify_model_index_json(output_dir):
+def modify_model_index_json(model_type,output_dir):
     model_index_path = os.path.join(output_dir, "model_index.json")
 
     with open(model_index_path, 'r', encoding='utf-8') as f:
@@ -63,7 +82,10 @@ def modify_model_index_json(output_dir):
 
     # change class name
     if "_class_name" in config:
-        config["_class_name"] = "WanDMDPipeline"
+        if model_type == "Wan2.2-I2V-14B-720p":
+            config["_class_name"] = "WanImageToVideoDmdPipeline"
+        else:
+            config["_class_name"] = "WanDMDPipeline"
     else:
         raise KeyError("_class_name not found in model_index.json")
 
@@ -76,6 +98,13 @@ def modify_model_index_json(output_dir):
     else:
         raise KeyError("'transformer' not found in model_index.json")
 
+    if "transformer_2" in config:
+        if isinstance(config["transformer_2"], list) and len(config["transformer_2"]) == 2 and config["transformer"][0]:
+            config["transformer"][0] = "diffusers"
+        else:
+            raise ValueError("Unexpected format for 'transformer' in model_index.json")
+
+
     # save
     with open(model_index_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
@@ -83,7 +112,7 @@ def modify_model_index_json(output_dir):
     print(f"Modified model_index.json: _class_name → WanDMDPipeline, transformer[0] → diffusers")
 
 
-def convert_transformer_from_pth(model_type, pth_path, output_dir):
+def convert_transformer_from_pth(model_type, pth_path):
     """Transformer"""
     # Load the original weight
     original_state_dict = torch.load(pth_path, map_location='cpu')
@@ -93,7 +122,10 @@ def convert_transformer_from_pth(model_type, pth_path, output_dir):
             # [1536, 64] --> [1536, 16, 1, 2, 2]
             # [5120, 64] --> [5120, 16, 1, 2, 2]
             # 64 = 16 * 1 * 2 * 2
-            original_state_dict['patch_embedding.weight'] = weight.view(-1, 16, 1, 2, 2)
+            if model_type in ("Wan-T2V-14B","Wan-T2V-1.3B"):
+                original_state_dict['patch_embedding.weight'] = weight.view(-1, 16, 1, 2, 2)
+            elif model_type in ("Wan2.2-I2V-14B-720p"):
+                original_state_dict['patch_embedding.weight'] = weight.view(-1, 36, 1, 2, 2)
     # Creating a Wan Transformer Configuration
     config = get_transformer_config(model_type)
     sample_tensor = next(iter(original_state_dict.values()))
@@ -365,7 +397,7 @@ def convert_vae_from_pth(vae_pth_path, output_dir):
     return vae
 
 
-def create_diffusers_pipeline(model_dir, transformer, vae, umt5_pth, tokenizer_path):
+def create_diffusers_pipeline(model_dir, transformer,transformer2, vae, umt5_pth, tokenizer_path):
     """Create a complete diffusers pipeline"""
 
     # text_encoder
@@ -384,13 +416,24 @@ def create_diffusers_pipeline(model_dir, transformer, vae, umt5_pth, tokenizer_p
     )
 
     # pipeline
-    pipe = WanPipeline(
-        transformer=transformer,
-        text_encoder=text_encoder,
-        tokenizer=tokenizer,
-        vae=vae,
-        scheduler=scheduler,
-    )
+    if transformer2 is not None:
+        pipe = WanImageToVideoPipeline(
+            transformer=transformer,
+            transformer_2=transformer2,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+            vae=vae,
+            scheduler=scheduler,
+            boundary_ratio=0.9,
+        )
+    else:
+        pipe = WanPipeline(
+            transformer=transformer,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+            vae=vae,
+            scheduler=scheduler,
+        )
 
     # save
     pipe.save_pretrained(model_dir, safe_serialization=True)
@@ -402,27 +445,29 @@ def create_diffusers_pipeline(model_dir, transformer, vae, umt5_pth, tokenizer_p
 def main():
     model_type = "Wan-T2V-1.3B"
     transformer_pth = "Wan2.1-T2V-1.3B/TurboWan2.1-T2V-1.3B-480P.pth"
+    transformer2_pth = None
     vae_pth = "Wan2.1-T2V-1.3B/Wan2.1_VAE.pth"
     tokenizer_path = "google/umt5-xxl"
     umt5_pth = "google/umt5-xxl"
-
+    transformer2 = None
     output_dir = "TurboWan2.1-T2V-1.3B-Diffusers"
 
     os.makedirs(output_dir, exist_ok=True)
 
     print("convert transformer...")
-    transformer = convert_transformer_from_pth(model_type, transformer_pth, output_dir)
-
+    transformer = convert_transformer_from_pth(model_type, transformer_pth)
+    if model_type=="Wan2.2-I2V-14B-720p" and transformer2_pth:
+        transformer2 = convert_transformer_from_pth(model_type, transformer2_pth)
     print("convert VAE...")
     vae = convert_vae_from_pth(vae_pth, output_dir)
 
     print("convert pipeline...")
-    pipe = create_diffusers_pipeline(output_dir, transformer, vae, umt5_pth, tokenizer_path)
+    pipe = create_diffusers_pipeline(output_dir, transformer,transformer2 , vae, umt5_pth, tokenizer_path)
 
     print(f"The conversion is complete! Models are saved at: {output_dir}")
 
     print("modify model_index.json...")
-    modify_model_index_json(output_dir)
+    modify_model_index_json(model_type,output_dir)
 
 
 if __name__ == "__main__":
