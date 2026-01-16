@@ -12,7 +12,7 @@ from diffusers import (
 )
 from transformers import AutoTokenizer, UMT5EncoderModel
 
-from model_network.turbo_wan import WanTransformer3DModel
+from model_network.int8_turbo_wan import WanTransformer3DModel
 
 
 def get_transformer_config(model_type: str) -> Dict[str, Any]:
@@ -182,6 +182,10 @@ def convert_transformer_from_pth(model_type, pth_path):
         new_key = key[:]
         for replace_key, rename_key in key_mapping.items():
             new_key = new_key.replace(replace_key, rename_key)
+            if new_key.endswith("int8_weight"):
+                new_key = new_key[:-len("int8_weight")] + "weight"
+            if new_key.endswith("scale"):
+                new_key = new_key[:-len("scale")] + "weight_scale_inv"
         update_state_dict_(original_state_dict, key, new_key)
 
     # Load the transformed weights
@@ -441,16 +445,48 @@ def create_diffusers_pipeline(model_dir, transformer,transformer2, vae, umt5_pth
     return pipe
 
 
+def write_quantization_config_to_file(config_file_path):
+    if not config_file_path.exists():
+        raise FileNotFoundError(f"can't found: {config_file_path.resolve()}")
+
+    with open(config_file_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    quantization_config = {
+        "activation_scheme": "dynamic",
+        "quant_method": "int8",
+        "weight_block_size": [128, 128],
+        "skip_layers": [
+            ".local_attn.proj_l.weight",
+            "condition_embedder.",
+            "patch_embedding.weight",
+            "proj_out.weight",
+            ".norm_k.weight",
+            ".norm_q.weight",
+            ".norm2.weight",
+            "scale_shift_table"
+        ]
+    }
+
+    # 3. 更新字段（覆盖已有）
+    data["quantization_config"] = quantization_config
+
+    # 4. 写回文件，保留格式（可选缩进）
+    with open(config_file_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+    print(f"✅ quantization_config already write into: {config_file_path.resolve()}")
+
 # main
 def main():
-    model_type = "Wan-T2V-1.3B"
-    transformer_pth = "Wan2.1-T2V-1.3B/TurboWan2.1-T2V-1.3B-480P.pth"
-    transformer2_pth = None
-    vae_pth = "Wan2.1-T2V-1.3B/Wan2.1_VAE.pth"
+    model_type = "Wan2.2-I2V-14B-720p"
+    transformer_pth = "TurboWan2.2-I2V-A14B-720P/TurboWan2.2-I2V-A14B-high-720P-quant.pth"
+    transformer2_pth = "TurboWan2.2-I2V-A14B-720P/TurboWan2.2-I2V-A14B-low-720P-quant.pth"
+    vae_pth = "Wan2.2-I2V-A14B/Wan2.1_VAE.pth"
     tokenizer_path = "google/umt5-xxl"
     umt5_pth = "google/umt5-xxl"
     transformer2 = None
-    output_dir = "TurboWan2.1-T2V-1.3B-Diffusers"
+    output_dir = "TurboWan2.2-I2V-A14B-Diffusers"
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -468,6 +504,10 @@ def main():
 
     print("modify model_index.json...")
     modify_model_index_json(model_type,output_dir)
+    write_quantization_config_to_file(os.path.join(output_dir,"transformer"))
+    if transformer2 is not None:
+        write_quantization_config_to_file(os.path.join(output_dir, "transformer_2"))
+
 
 
 if __name__ == "__main__":
