@@ -98,7 +98,7 @@ def modify_model_index_json(model_type,output_dir):
     else:
         raise KeyError("'transformer' not found in model_index.json")
 
-    if "transformer_2" in config:
+    if model_type == "Wan2.2-I2V-14B-720p" and "transformer_2" in config:
         if isinstance(config["transformer_2"], list) and len(config["transformer_2"]) == 2 and config["transformer_2"][0]:
             config["transformer_2"][0] = "diffusers"
         else:
@@ -446,9 +446,7 @@ def create_diffusers_pipeline(model_dir, transformer,transformer2, vae, umt5_pth
 
 
 def write_quantization_config_to_file(config_file_path):
-    if not config_file_path.exists():
-        raise FileNotFoundError(f"can't found: {config_file_path.resolve()}")
-
+    
     with open(config_file_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
