@@ -473,7 +473,7 @@ def write_quantization_config_to_file(config_file_path):
     with open(config_file_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-    print(f"✅ quantization_config already write into: {config_file_path.resolve()}")
+    print(f"✅ quantization_config already write into: {config_file_path.resolve}")
 
 # main
 def main():
